@@ -5,8 +5,7 @@ import win32api
 import win32process
 from pynput import keyboard
 
-# 'focus'  = restore & foreground each window before sending (caret, IME, hotkeys all live)
-# 'direct' = never touch your desktop; just blast messages into the Edit control
+# Choose 'focus' (restore & click/focus each window) or 'direct' (blast messages to Edit control)
 MODE = 'focus'  # or 'direct'
 
 BLACKLIST_TITLES = {
@@ -42,7 +41,7 @@ def get_edit_control(hwnd):
     edit = win32gui.FindWindowEx(hwnd, 0, "Edit", None)
     if edit:
         return edit
-
+    
     children = []
     def _enum_child(c, _):
         cls = win32gui.GetClassName(c)
@@ -51,6 +50,7 @@ def get_edit_control(hwnd):
     for c, cls in children:
         if "Edit" in cls:
             return c
+    
     return hwnd
 
 def focus_window(hwnd):
@@ -58,7 +58,6 @@ def focus_window(hwnd):
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
     except Exception:
         pass
-
     try:
         my_tid = win32api.GetCurrentThreadId()
         their_tid, _ = win32process.GetWindowThreadProcessId(hwnd)
@@ -70,28 +69,36 @@ def focus_window(hwnd):
             win32gui.SetForegroundWindow(hwnd)
         except Exception:
             pass
-
     time.sleep(0.02)
 
-def send_char_to(edit_hwnd, ch):
-    win32api.PostMessage(edit_hwnd, win32con.WM_CHAR, ord(ch), 0)
+def click_inside(hwnd, offset=(10,10)):
+    client_pt = win32gui.ClientToScreen(hwnd, (0,0))
+    x = client_pt[0] + offset[0]
+    y = client_pt[1] + offset[1]
+    win32api.SetCursorPos((x, y))
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP,   0, 0, 0, 0)
+    time.sleep(0.02)
 
-def send_special_to(edit_hwnd, vk):
-    win32api.PostMessage(edit_hwnd, win32con.WM_KEYDOWN, vk, 0)
-    win32api.PostMessage(edit_hwnd, win32con.WM_KEYUP,   vk, 0)
+def send_char_to(target_hwnd, ch):
+    win32api.PostMessage(target_hwnd, win32con.WM_CHAR, ord(ch), 0)
+
+def send_special_to(target_hwnd, vk):
+    win32api.PostMessage(target_hwnd, win32con.WM_KEYDOWN, vk, 0)
+    win32api.PostMessage(target_hwnd, win32con.WM_KEYUP,   vk, 0)
 
 def on_press_factory(target_hwnds):
     def _on_press(key):
         for hwnd in target_hwnds:
             if MODE == 'focus':
                 focus_window(hwnd)
+                click_inside(hwnd)
 
             edit = get_edit_control(hwnd)
-
             try:
                 ch = key.char
                 send_char_to(edit, ch)
-            except AttributeError:
+            except (AttributeError, TypeError):
                 vk = SPECIAL_KEYS.get(key)
                 if vk is not None:
                     send_special_to(edit, vk)
@@ -105,13 +112,13 @@ def main():
 
     sel = input("\nEnter comma-separated indices to broadcast to (e.g. 0,2): ")
     try:
-        indices = [int(x.strip()) for x in sel.split(",") if x.strip()]
+        indices = [int(x.strip()) for x in sel.split(",") if x.strip() != ""]
         target_hwnds = [windows[i][0] for i in indices]
     except Exception:
         print("Invalid selection. Exiting.")
         return
 
-    mode_desc = "direct to Edit control" if MODE=='direct' else "focusing each window"
+    mode_desc = "direct to Edit control" if MODE=='direct' else "focusing + clicking each window"
     print(f"\nBroadcasting keystrokes to {len(target_hwnds)} window(s) ({mode_desc}).")
     print("Press Ctrl+C to stop.")
 
