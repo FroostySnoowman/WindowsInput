@@ -1,12 +1,9 @@
 import time
-import win32gui
-import win32con
-import win32api
-import win32process
+import win32gui, win32con, win32api, win32process
 from pynput import keyboard
 
-# Choose 'focus' (restore & click/focus each window) or 'direct' (blast messages to Edit control)
-MODE = 'focus'  # or 'direct'
+MODE = 'focus'   # 'direct' (no UI focus, fastest) or 'focus' (SetFocus each time)
+DELAY = 0.005    # small pause after SetForegroundWindow / SetFocus
 
 BLACKLIST_TITLES = {
     "Program Manager",
@@ -41,7 +38,6 @@ def get_edit_control(hwnd):
     edit = win32gui.FindWindowEx(hwnd, 0, "Edit", None)
     if edit:
         return edit
-    
     children = []
     def _enum_child(c, _):
         cls = win32gui.GetClassName(c)
@@ -50,79 +46,69 @@ def get_edit_control(hwnd):
     for c, cls in children:
         if "Edit" in cls:
             return c
-    
     return hwnd
 
-def focus_window(hwnd):
+def attach_input_threads(hwnds):
+    my_tid = win32api.GetCurrentThreadId()
+    seen = set()
+    for hwnd in hwnds:
+        their_tid, _ = win32process.GetWindowThreadProcessId(hwnd)
+        if their_tid not in seen:
+            win32process.AttachThreadInput(my_tid, their_tid, True)
+            seen.add(their_tid)
+
+def focus_and_set(hwnd, target_hwnd):
     try:
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        win32gui.SetForegroundWindow(hwnd)
     except Exception:
         pass
+    time.sleep(DELAY)
     try:
-        my_tid = win32api.GetCurrentThreadId()
-        their_tid, _ = win32process.GetWindowThreadProcessId(hwnd)
-        win32process.AttachThreadInput(my_tid, their_tid, True)
-        win32gui.SetForegroundWindow(hwnd)
-        win32process.AttachThreadInput(my_tid, their_tid, False)
+        win32gui.SetFocus(target_hwnd)
     except Exception:
-        try:
-            win32gui.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
-    time.sleep(0.02)
+        pass
+    time.sleep(DELAY)
 
-def click_inside(hwnd, offset=(10,10)):
-    client_pt = win32gui.ClientToScreen(hwnd, (0,0))
-    x = client_pt[0] + offset[0]
-    y = client_pt[1] + offset[1]
-    win32api.SetCursorPos((x, y))
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP,   0, 0, 0, 0)
-    time.sleep(0.02)
-
-def send_char_to(target_hwnd, ch):
-    win32api.PostMessage(target_hwnd, win32con.WM_CHAR, ord(ch), 0)
-
-def send_special_to(target_hwnd, vk):
-    win32api.PostMessage(target_hwnd, win32con.WM_KEYDOWN, vk, 0)
-    win32api.PostMessage(target_hwnd, win32con.WM_KEYUP,   vk, 0)
-
-def on_press_factory(target_hwnds):
+def on_press_factory(hwnds, edits):
     def _on_press(key):
-        for hwnd in target_hwnds:
+        for hwnd, edit in zip(hwnds, edits):
             if MODE == 'focus':
-                focus_window(hwnd)
-                click_inside(hwnd)
+                focus_and_set(hwnd, edit)
 
-            edit = get_edit_control(hwnd)
             try:
                 ch = key.char
-                send_char_to(edit, ch)
+                win32api.PostMessage(edit, win32con.WM_CHAR, ord(ch), 0)
             except (AttributeError, TypeError):
                 vk = SPECIAL_KEYS.get(key)
                 if vk is not None:
-                    send_special_to(edit, vk)
+                    win32api.PostMessage(edit, win32con.WM_KEYDOWN, vk, 0)
+                    win32api.PostMessage(edit, win32con.WM_KEYUP,   vk, 0)
     return _on_press
 
 def main():
     windows = list_windows()
     print("Available Windows:")
-    for idx, (_hwnd, title) in enumerate(windows):
-        print(f"  [{idx}] {title}")
+    for i, (_hwnd, title) in enumerate(windows):
+        print(f"  [{i}] {title}")
 
     sel = input("\nEnter comma-separated indices to broadcast to (e.g. 0,2): ")
     try:
-        indices = [int(x.strip()) for x in sel.split(",") if x.strip() != ""]
-        target_hwnds = [windows[i][0] for i in indices]
+        idxs = [int(x) for x in sel.split(",") if x.strip()!='']
+        hwnds = [windows[i][0] for i in idxs]
     except Exception:
         print("Invalid selection. Exiting.")
         return
 
-    mode_desc = "direct to Edit control" if MODE=='direct' else "focusing + clicking each window"
-    print(f"\nBroadcasting keystrokes to {len(target_hwnds)} window(s) ({mode_desc}).")
-    print("Press Ctrl+C to stop.")
+    edits = [get_edit_control(h) for h in hwnds]
 
-    listener = keyboard.Listener(on_press=on_press_factory(target_hwnds))
+    attach_input_threads(hwnds)
+
+    mode_desc = "direct to controls" if MODE=='direct' else "focus+SetFocus"
+    print(f"\nBroadcasting keystrokes to {len(hwnds)} window(s) ({mode_desc}).")
+    print("Hold any key or type normally; press Ctrl+C to stop.")
+
+    listener = keyboard.Listener(on_press=on_press_factory(hwnds, edits))
     listener.start()
     listener.join()
 
