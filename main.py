@@ -1,5 +1,8 @@
 import time
-import win32gui, win32con, win32api, win32process
+import win32gui
+import win32con
+import win32api
+import win32process
 from pynput import keyboard
 
 BLACKLIST_TITLES = {
@@ -34,18 +37,17 @@ def list_windows():
     win32gui.EnumWindows(_enum, None)
     return wins
 
-
 def get_edit_control(hwnd):
     edit = win32gui.FindWindowEx(hwnd, 0, "Edit", None)
     if edit:
         return edit
+
     found = []
     def _find(child, _):
         if "Edit" in win32gui.GetClassName(child):
             found.append(child)
     win32gui.EnumChildWindows(hwnd, _find, None)
     return found[0] if found else hwnd
-
 
 def attach_input(hwnds):
     my_tid = win32api.GetCurrentThreadId()
@@ -56,7 +58,6 @@ def attach_input(hwnds):
             win32process.AttachThreadInput(my_tid, tid, True)
             seen.add(tid)
 
-
 def bring_forward(hwnd):
     try:
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
@@ -64,7 +65,6 @@ def bring_forward(hwnd):
     except Exception:
         pass
     time.sleep(PAUSE)
-
 
 def click_center(hwnd):
     left, top, right, bottom = win32gui.GetClientRect(hwnd)
@@ -75,7 +75,6 @@ def click_center(hwnd):
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP,   0, 0, 0, 0)
     time.sleep(PAUSE)
-
 
 def post_key(target_hwnd, key):
     try:
@@ -90,7 +89,6 @@ def post_key(target_hwnd, key):
 def make_on_press(targets):
     hwnds, edits = zip(*targets)
     attach_input(hwnds)
-
     last_press_time = {}
 
     def _on_press(key):
@@ -100,17 +98,24 @@ def make_on_press(targets):
         last_press_time[key] = now
 
         original_hwnd = win32gui.GetForegroundWindow()
-        original_edit = get_edit_control(original_hwnd) if win32gui.IsWindow(original_hwnd) else None
+        if win32gui.IsWindow(original_hwnd):
+            original_edit = get_edit_control(original_hwnd)
+        else:
+            original_edit = None
 
         for hwnd, edit in targets:
             bring_forward(hwnd)
-            click_center(hwnd)
+            try:
+                win32gui.SetFocus(edit)
+            except Exception:
+                pass
+            click_center(edit)
             post_key(edit, key)
 
         if win32gui.IsWindow(original_hwnd):
             bring_forward(original_hwnd)
-            click_center(original_hwnd)
             if original_edit:
+                click_center(original_edit)
                 post_key(original_edit, key)
 
     return _on_press
@@ -128,16 +133,19 @@ def main():
     sel = input("\nIndices to broadcast to (e.g. 0,2,3): ")
     try:
         idxs = [int(x) for x in sel.split(",") if x.strip()]
-        targets = [(wins[i][0], get_edit_control(wins[i][0])) for i in idxs]
+        targets = []
+        for i in idxs:
+            hwnd = wins[i][0]
+            edit = get_edit_control(hwnd)
+            targets.append((hwnd, edit))
     except Exception:
         print("Bad selection.")
         return
 
-    print(f"\nBroadcasting to {len(targets)} window(s).  Ctrl-C to quit.")
+    print(f"\nBroadcasting to {len(targets)} window(s). Ctrl-C to quit.")
     listener = keyboard.Listener(on_press=make_on_press(targets))
     listener.start()
     listener.join()
-
 
 if __name__ == "__main__":
     main()
